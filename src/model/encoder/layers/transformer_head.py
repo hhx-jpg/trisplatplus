@@ -113,12 +113,14 @@ class LinearPts3d (nn.Module):
 
     def __init__(self, patch_size, dec_embed_dim, output_dim=3, downsample_ratio=1, points_per_axis=None):
         super().__init__()
-        self.patch_size = patch_size
-        self.downsample_ratio = downsample_ratio
+        self.patch_size = int(patch_size)
+        self.downsample_ratio = int(downsample_ratio)
+        if self.patch_size % self.downsample_ratio != 0:
+            raise ValueError("patch_size must be divisible by downsample_ratio.")
 
         # Output points per token after downsampling
-        points_per_token = (self.patch_size // downsample_ratio) ** 2 if points_per_axis is None else points_per_axis ** 2
-        self.points_per_axis = self.patch_size // downsample_ratio if points_per_axis is None else points_per_axis
+        points_per_token = (self.patch_size // self.downsample_ratio) ** 2 if points_per_axis is None else points_per_axis ** 2
+        self.points_per_axis = self.patch_size // self.downsample_ratio if points_per_axis is None else int(points_per_axis)
         self.proj = nn.Linear(dec_embed_dim, output_dim * points_per_token)
 
     def forward(self, decout, img_shape):

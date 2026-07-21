@@ -5,6 +5,7 @@ hydra-core
 jaxtyping
 beartype
 wandb
+huggingface_hub
 einops
 colorama
 numpy==1.26.4

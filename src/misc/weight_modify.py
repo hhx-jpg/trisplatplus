@@ -214,6 +214,57 @@ def adapt_linear_weights(original_weight, original_bias, new_gaussians_per_axis,
     return weight_downsampled, bias_downsampled
 
 
+def resize_spatial_linear_weights(
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    target_shape: tuple[int, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if len(target_shape) != 2:
+        raise ValueError(f"Expected a two-dimensional target shape, got {target_shape}")
+    source_axis = math.isqrt(weight.shape[0] // target_shape[0])
+    target_axis = math.isqrt(target_shape[1] // target_shape[0])
+    if source_axis * source_axis * target_shape[0] != weight.shape[0]:
+        raise ValueError(f"Cannot infer source spatial shape from {tuple(weight.shape)}")
+    if target_axis * target_axis * target_shape[0] != target_shape[1]:
+        raise ValueError(f"Cannot infer target spatial shape from {target_shape}")
+
+    channels = target_shape[0]
+    feature_dim = weight.shape[1]
+    spatial_weight = weight.view(channels, source_axis, source_axis, feature_dim)
+    spatial_weight = spatial_weight.permute(0, 3, 1, 2)
+    spatial_weight = F.interpolate(
+        spatial_weight.float(),
+        size=(target_axis, target_axis),
+        mode="bicubic",
+        align_corners=False,
+    ).to(weight.dtype)
+    resized_weight = spatial_weight.permute(0, 2, 3, 1).reshape(-1, feature_dim)
+
+    spatial_bias = bias.view(channels, 1, source_axis, source_axis)
+    resized_bias = F.interpolate(
+        spatial_bias.float(),
+        size=(target_axis, target_axis),
+        mode="bicubic",
+        align_corners=False,
+    ).to(bias.dtype).reshape(-1)
+    return resized_weight, resized_bias
+
+
+def resize_spatial_conv_kernel(
+    weight: torch.Tensor,
+    target_kernel_size: tuple[int, int],
+) -> torch.Tensor:
+    out_channels, in_channels, source_h, source_w = weight.shape
+    flattened = weight.reshape(out_channels * in_channels, 1, source_h, source_w)
+    resized = F.interpolate(
+        flattened.float(),
+        size=target_kernel_size,
+        mode="bicubic",
+        align_corners=False,
+    ).to(weight.dtype)
+    return resized.reshape(out_channels, in_channels, *target_kernel_size)
+
+
 def checkpoint_filter_fn_new(
         state_dict: Dict[str, torch.Tensor],
         model: nn.Module,

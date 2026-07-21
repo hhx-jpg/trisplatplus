@@ -2403,7 +2403,11 @@ class ModelWrapper(LightningModule):
         colors: Float[Tensor, "batch vrspp 3"],
     ) -> Float[Tensor, "3 vis_height vis_width"]:
         v, _, h, w = context_images.shape
-        h, w = h // 14 * self.gaussians_per_axis, w // 14 * self.gaussians_per_axis
+        patch_size = int(self.encoder.patch_size)
+        h, w = (
+            h // patch_size * self.gaussians_per_axis,
+            w // patch_size * self.gaussians_per_axis,
+        )
         rb = 0
         opacities = repeat(
             opacities[rb], "(v h w spp) -> spp v c h w", v=v, c=3, h=h, w=w
@@ -2675,32 +2679,27 @@ class ModelWrapper(LightningModule):
                 print_metrics(v, methods)
 
     def configure_optimizers(self):
-        new_params, new_param_names = [], []
-        pretrained_params, pretrained_param_names = [], []
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-
-            if (
-                "gaussian" in name
-                or "triangle" in name
-                or "rgb_embed" in name
-                or "intrinsics_embed" in name
-                or "normal_refiner" in name
-            ):
-                new_params.append(param)
-                new_param_names.append(name)
-            else:
-                pretrained_params.append(param)
-                pretrained_param_names.append(name)
+        encoder_groups = self.encoder.optimizer_parameter_groups()
+        encoder_parameter_ids = {
+            id(param)
+            for parameters in encoder_groups.values()
+            for param in parameters
+        }
+        other_parameters = [
+            param
+            for param in self.parameters()
+            if param.requires_grad and id(param) not in encoder_parameter_ids
+        ]
+        head_parameters = [*encoder_groups["heads"], *other_parameters]
+        backbone_parameters = encoder_groups["backbone"]
 
         param_dicts = [
             {
-                "params": new_params,
+                "params": head_parameters,
                 "lr": self.optimizer_cfg.lr,
              },
             {
-                "params": pretrained_params,
+                "params": backbone_parameters,
                 "lr": self.optimizer_cfg.lr * self.optimizer_cfg.backbone_lr_multiplier,
             },
         ]

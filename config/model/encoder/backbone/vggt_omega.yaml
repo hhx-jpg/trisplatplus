@@ -1,0 +1,7 @@
+name: vggt_omega
+source_path: /home/v-hanhaoxuan/vggt-omega
+checkpoint_path: pretrained_weights/vggt_omega_1b_512.pt
+checkpoint_sha256: c02da418b18bb01d0392598d3f6147366bcde1bb70fd08a5e3bf7925b0667934
+trisplat_head_checkpoint_path: ""
+frozen: true
+cached_layer_idx: 23

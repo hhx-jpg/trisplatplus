@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import re
 import time
@@ -18,7 +19,9 @@ from PIL import Image
 from src.checkpoint_utils import (
     extract_state_dict,
     get_checkpoint_schedule_step,
+    init_vggt_omega_backbone,
     load_checkpoint_file,
+    resolve_omega_checkpoint_paths,
 )
 
 if TYPE_CHECKING:
@@ -26,6 +29,7 @@ if TYPE_CHECKING:
     from src.mesh.tsdf_gs2d import TsdfGs2dCfgWrapper
     from src.model.encoder.encoder_trisplat import EncoderTrisplatCfg
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_EXPERIMENT = "trisplat_re10k_triangle_refiner_unet_10m_wide"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -104,6 +108,26 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Extra Hydra override. Can be repeated.",
+    )
+    parser.add_argument(
+        "--save-render",
+        action="store_true",
+        help="Run the triangle decoder and save RGB renders for the selected views.",
+    )
+    parser.add_argument(
+        "--save-render-depth",
+        action="store_true",
+        help="Save colorized depth maps when decoder rendering is enabled.",
+    )
+    parser.add_argument(
+        "--save-render-opacity",
+        action="store_true",
+        help="Save opacity maps when decoder rendering is enabled.",
+    )
+    parser.add_argument(
+        "--render-dir",
+        default="render",
+        help="Directory name under --out-dir for decoder render outputs.",
     )
     parser.add_argument(
         "--force",
@@ -290,8 +314,9 @@ def compose_cfg(args: argparse.Namespace, root: Path) -> DictConfig:
         return compose(config_name="main", overrides=overrides)
 
 
-def typed_cfgs(cfg: DictConfig) -> tuple[EncoderTrisplatCfg, TsdfGs2dCfgWrapper]:
+def typed_cfgs(cfg: DictConfig) -> tuple[EncoderTrisplatCfg, Any, TsdfGs2dCfgWrapper]:
     from src.mesh.tsdf_gs2d import TsdfGs2dCfgWrapper
+    from src.model.decoder.decoder_triangle_splatting_cuda import DecoderTriangleSplattingCUDACfg
     from src.model.encoder.encoder_trisplat import EncoderTrisplatCfg
 
     type_cfg = Config(cast=[tuple])
@@ -300,12 +325,17 @@ def typed_cfgs(cfg: DictConfig) -> tuple[EncoderTrisplatCfg, TsdfGs2dCfgWrapper]
         OmegaConf.to_container(cfg.model.encoder, resolve=True),
         config=type_cfg,
     )
+    decoder_cfg = from_dict(
+        DecoderTriangleSplattingCUDACfg,
+        OmegaConf.to_container(cfg.model.decoder, resolve=True),
+        config=type_cfg,
+    )
     mesh_cfg = from_dict(
         TsdfGs2dCfgWrapper,
         OmegaConf.to_container(cfg.mesh, resolve=True),
         config=type_cfg,
     )
-    return encoder_cfg, mesh_cfg
+    return encoder_cfg, decoder_cfg, mesh_cfg
 
 
 def load_encoder_weights(
@@ -421,6 +451,9 @@ def resolve_device(device_arg: str) -> torch.device:
 
 def main() -> None:
     from src.mesh import get_mesh
+    from src.misc.image_io import save_image
+    from src.misc.utils import vis_depth_map
+    from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.types import Triangles
 
@@ -438,7 +471,7 @@ def main() -> None:
     prepare_output_dir(out_dir, args.force)
 
     cfg = compose_cfg(args, root)
-    encoder_cfg, mesh_cfg = typed_cfgs(cfg)
+    encoder_cfg, decoder_cfg, mesh_cfg = typed_cfgs(cfg)
     if not encoder_cfg.pose_free:
         raise ValueError("Custom image inference requires model.encoder.pose_free=true.")
     if not encoder_cfg.use_triangle:
@@ -487,7 +520,31 @@ def main() -> None:
     encoder, _ = get_encoder(encoder_cfg)
     missing_keys, unexpected_keys, ckpt_schedule_step = load_encoder_weights(encoder, ckpt_path)
     schedule_step = int(args.schedule_step if args.schedule_step is not None else ckpt_schedule_step)
+
+    # VGGT-Omega two-source init fallback: if the checkpoint did not contain
+    # Omega aggregator weights (e.g. a legacy heads-only checkpoint or a
+    # fresh experiment), load the aggregator and optional head warm-start
+    # from the configured paths.
+    if encoder_cfg.backbone.name == "vggt_omega":
+        backbone = encoder.backbone
+        if not bool(backbone._checkpoint_loaded.item()):
+            omega_audits = init_vggt_omega_backbone(
+                encoder,
+                encoder_cfg.backbone,
+                root,
+            )
+            audit_dir = out_dir / "checkpoint_audit"
+            for name, audit in omega_audits.items():
+                if audit is not None:
+                    audit.log()
+                    audit.save_json(audit_dir / f"vggt_omega_{name}.json")
+            logger.info(
+                "VGGT-Omega two-source init complete (checkpoint did not contain "
+                "aggregator weights)."
+            )
+
     encoder = encoder.to(device).eval()
+    decoder = get_decoder(decoder_cfg).to(device).eval()
     mesh = get_mesh(mesh_cfg)
 
     mesh_batch = move_batch_to_device(batch_cpu, device)
@@ -517,6 +574,39 @@ def main() -> None:
         mesh_batch["context"]["extrinsics"] = pred_c2w
         mesh_batch["target"]["extrinsics"] = pred_c2w
 
+    decoder_time = None
+    render_requested = args.save_render or args.save_render_depth or args.save_render_opacity
+    if render_requested:
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.synchronize()
+        t_dec = time.perf_counter()
+        with torch.inference_mode():
+            render_output = decoder.forward(
+                primitives,
+                mesh_batch["target"]["extrinsics"],
+                mesh_batch["target"]["intrinsics"],
+                mesh_batch["target"]["near"],
+                mesh_batch["target"]["far"],
+                image_shape,
+                global_step=schedule_step,
+            )
+        if torch.cuda.is_available() and device.type == "cuda":
+            torch.cuda.synchronize()
+        decoder_time = time.perf_counter() - t_dec
+
+        render_root = out_dir / args.render_dir
+        render_indices = mesh_batch["target"]["index"][0].detach().cpu().tolist()
+        if args.save_render:
+            for index, color in zip(render_indices, render_output.color[0]):
+                save_image(color, render_root / "color" / f"{int(index):0>6}.png")
+        if args.save_render_depth and render_output.depth is not None:
+            depth_vis = vis_depth_map(render_output.depth[0])
+            for index, depth in zip(render_indices, depth_vis):
+                save_image(depth, render_root / "depth" / f"{int(index):0>6}.png")
+        if args.save_render_opacity and render_output.opacity is not None:
+            for index, opacity in zip(render_indices, render_output.opacity[0]):
+                save_image(opacity, render_root / "opacity" / f"{int(index):0>6}.png")
+
     opacity_kwargs = {}
     decoder_cfg = cfg.model.decoder
     opacity_kwargs = {
@@ -533,7 +623,7 @@ def main() -> None:
         primitives,
         str(out_dir / "mesh"),
         encoder_time=encoder_time,
-        decoder_time=None,
+        decoder_time=decoder_time,
         **opacity_kwargs,
     )
 
@@ -568,6 +658,11 @@ def main() -> None:
             "device": str(device),
             "schedule_step": schedule_step,
             "encoder_time_sec": encoder_time,
+            "decoder_time_sec": decoder_time,
+            "save_render": bool(args.save_render),
+            "save_render_depth": bool(args.save_render_depth),
+            "save_render_opacity": bool(args.save_render_opacity),
+            "render_output_dir": str(out_dir / args.render_dir) if render_requested else None,
             "mesh_output_path": mesh_result.output_path,
             "mesh_space_metadata_path": mesh_result.space_metadata_path,
             "direct_timing": mesh_result.direct_timing,
@@ -577,6 +672,8 @@ def main() -> None:
     )
 
     print(f"Saved mesh: {mesh_result.output_path}")
+    if render_requested:
+        print(f"Saved renders: {out_dir / args.render_dir}")
     if pred_c2w is not None:
         print(f"Saved predicted poses: {out_dir / 'predicted_c2w.npy'}")
     print(f"Saved summary: {out_dir / 'inference_summary.json'}")

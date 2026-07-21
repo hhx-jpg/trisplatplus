@@ -15,6 +15,7 @@ from ..layers.block import BlockRope
 from ..layers.attention import FlashAttentionRope
 from .dinov2.hub.backbones import dinov2_vitl14_reg
 from huggingface_hub import PyTorchModelHubMixin
+from .backbone import Backbone, BackboneOutput
 
 
 @dataclass
@@ -26,7 +27,7 @@ class BackboneLocalGlobalCfg:
     use_pred_intrinsics_for_embed: bool = False
     pred_intrinsics_min_focal: float = 1e-6
 
-class BackboneLocalGlobal(nn.Module, PyTorchModelHubMixin):
+class BackboneLocalGlobal(Backbone[BackboneLocalGlobalCfg], PyTorchModelHubMixin):
     def __init__(
             self,
             cfg: BackboneLocalGlobalCfg,
@@ -35,7 +36,7 @@ class BackboneLocalGlobal(nn.Module, PyTorchModelHubMixin):
             decoder_size='large',
             use_checkpoint=False,
     ):
-        super().__init__()
+        super().__init__(cfg)
 
         self.use_checkpoint = use_checkpoint
 
@@ -57,12 +58,12 @@ class BackboneLocalGlobal(nn.Module, PyTorchModelHubMixin):
         #  Positonal Encoding
         # ----------------------
         self.pos_type = pos_type if pos_type is not None else 'none'
-        self.rope = None
+        self.head_rope = None
         if self.pos_type.startswith('rope'):  # eg rope100
             if RoPE2D is None: raise ImportError(
                 "Cannot find cuRoPE2D, please install it following the README instructions")
             freq = float(self.pos_type[len('rope'):])
-            self.rope = RoPE2D(freq=freq)
+            self.head_rope = RoPE2D(freq=freq)
             self.position_getter = PositionGetter()
         else:
             raise NotImplementedError
@@ -103,9 +104,10 @@ class BackboneLocalGlobal(nn.Module, PyTorchModelHubMixin):
                 init_values=0.01,
                 qk_norm=True,
                 attn_class=FlashAttentionRope,
-                rope=self.rope
+                rope=self.head_rope
             ) for _ in range(dec_depth)])
         self.dec_embed_dim = dec_embed_dim
+        self.output_dim = 2 * dec_embed_dim
 
         # ----------------------
         #     Register_token
@@ -228,4 +230,20 @@ class BackboneLocalGlobal(nn.Module, PyTorchModelHubMixin):
             raise NotImplementedError
 
         hidden, pos = self.decode(hidden, N, H, W)
-        return hidden, pos, self.patch_start_idx, x_low, intrinsic_pred
+        return BackboneOutput(
+            tokens=hidden,
+            positions=pos,
+            patch_start_idx=self.patch_start_idx,
+            intermediate=x_low,
+            intrinsic_pred=intrinsic_pred,
+        )
+
+    def freeze_modules(self, target: str) -> list[nn.Module | nn.Parameter]:
+        if target == "encoder":
+            return [self.encoder]
+        if target == "decoder":
+            modules: list[nn.Module | nn.Parameter] = [self.decoder, self.register_token]
+            if hasattr(self, "intrinsics_embed_layer"):
+                modules.append(self.intrinsics_embed_layer)
+            return modules
+        return super().freeze_modules(target)

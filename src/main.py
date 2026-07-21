@@ -19,7 +19,10 @@ from src.checkpoint_utils import (
     checkpoint_has_training_state,
     extract_state_dict,
     get_checkpoint_schedule_step,
+    init_vggt_omega_backbone,
     load_checkpoint_file,
+    load_trisplat_head_warm_start,
+    load_vggt_omega_aggregator,
 )
 from src.misc.weight_modify import checkpoint_filter_fn_new
 
@@ -207,8 +210,24 @@ def train(cfg_dict: DictConfig):
 
     encoder, encoder_visualizer = get_encoder(cfg.model.encoder)
 
+    if cfg.model.encoder.backbone.name == "vggt_omega":
+        repo_root = Path(hydra.utils.get_original_cwd())
+        omega_audits = init_vggt_omega_backbone(
+            encoder,
+            cfg.model.encoder.backbone,
+            repo_root,
+        )
+        audit_dir = output_dir / "checkpoint_audit"
+        for name, audit in omega_audits.items():
+            if audit is not None:
+                audit.save_json(audit_dir / f"vggt_omega_{name}.json")
+
     # Load the encoder weights.
-    if cfg.model.encoder.pretrained_weights and cfg.mode == "train":
+    if (
+        cfg.model.encoder.pretrained_weights
+        and cfg.mode == "train"
+        and cfg.model.encoder.backbone.name != "vggt_omega"
+    ):
         weight_path = cfg.model.encoder.pretrained_weights
         if "safetensors" in weight_path:
             from safetensors.torch import load_file as torch_load_file
@@ -221,7 +240,7 @@ def train(cfg_dict: DictConfig):
             log_state_dict_load_result(missing_keys, unexpected_keys, Path(weight_path))
 
         else:
-            ckpt_weights = torch.load(weight_path, map_location='cpu')
+            ckpt_weights = torch.load(weight_path, map_location='cpu', weights_only=True)
             if 'state_dict' in ckpt_weights:  # weights trained with our repo
                 ckpt_weights = ckpt_weights['state_dict']
                 ckpt_weights = {k[8:]: v for k, v in ckpt_weights.items() if k.startswith('encoder.')}

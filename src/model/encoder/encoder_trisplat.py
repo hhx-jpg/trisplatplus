@@ -426,49 +426,69 @@ class EncoderTrisplat(Encoder[EncoderTrisplatCfg]):
         self.gaussians_per_axis = min(self.gaussians_per_axis, self.patch_size // self.gaussian_downsample_ratio)
 
         self.upscale_token_ratio = cfg.upscale_token_ratio
-        self.head_pathch_size = self.patch_size // self.upscale_token_ratio
+        if self.patch_size % self.upscale_token_ratio != 0:
+            raise ValueError("patch_size must be divisible by upscale_token_ratio.")
+        if self.gaussians_per_axis % self.upscale_token_ratio != 0:
+            raise ValueError("gaussians_per_axis must be divisible by upscale_token_ratio.")
+        self.head_patch_size = self.patch_size // self.upscale_token_ratio
         self.position_getter = self.backbone.position_getter
 
+        self.backbone_output_dim = self.backbone.output_dim
         self.dec_embed_dim = 1024
         # ----------------------
         #  Local Points Decoder
         # ----------------------
         self.point_decoder = TransformerDecoder(
-            in_dim=2*self.dec_embed_dim,
+            in_dim=self.backbone_output_dim,
             dec_embed_dim=1024,
             dec_num_heads=16,
             out_dim=1024,
-            rope=self.backbone.rope,
+            rope=self.backbone.head_rope,
             use_checkpoint=cfg.use_checkpoint,
         )
-        self.point_head = LinearPts3d(patch_size=self.patch_size / self.upscale_token_ratio, dec_embed_dim=1024, output_dim=3, downsample_ratio=self.gaussian_downsample_ratio, points_per_axis=self.gaussians_per_axis // self.upscale_token_ratio)
+        self.point_head = LinearPts3d(patch_size=self.head_patch_size, dec_embed_dim=1024, output_dim=3, downsample_ratio=self.gaussian_downsample_ratio, points_per_axis=self.gaussians_per_axis // self.upscale_token_ratio)
 
         # ----------------------
         #     Primitive Parameters Decoder
         # ----------------------
         self.gaussian_decoder = deepcopy(self.point_decoder)
-        self.gaussian_head = LinearPts3d(patch_size=self.patch_size / self.upscale_token_ratio, dec_embed_dim=1024, output_dim=self.raw_gs_dim, downsample_ratio=self.gaussian_downsample_ratio, points_per_axis=self.gaussians_per_axis // self.upscale_token_ratio)
+        self.gaussian_head = LinearPts3d(patch_size=self.head_patch_size, dec_embed_dim=1024, output_dim=self.raw_gs_dim, downsample_ratio=self.gaussian_downsample_ratio, points_per_axis=self.gaussians_per_axis // self.upscale_token_ratio)
 
         # ----------------------
         #  Camera Pose Decoder
         # ----------------------
         self.camera_decoder = TransformerDecoder(
-            in_dim=2*self.dec_embed_dim,
+            in_dim=self.backbone_output_dim,
             dec_embed_dim=1024,
             dec_num_heads=16,                # 8
             out_dim=512,
-            rope=self.backbone.rope,
+            rope=self.backbone.head_rope,
             use_checkpoint=cfg.use_checkpoint,
         )
         self.camera_head = CameraHead(dim=512)
 
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
-        self.rgb_embed = PatchEmbed(patch_size=self.patch_size // self.upscale_token_ratio, in_chans=3, embed_dim=2048, norm_layer=norm_layer)
+        self.rgb_embed = PatchEmbed(
+            patch_size=self.patch_size // self.upscale_token_ratio,
+            in_chans=3,
+            embed_dim=self.backbone_output_dim,
+            norm_layer=norm_layer,
+        )
         nn.init.constant_(self.rgb_embed.proj.weight, 0)
         nn.init.constant_(self.rgb_embed.proj.bias, 0)
 
         # freeze parameters
         self.set_freeze(cfg.freeze)
+
+    def optimizer_parameter_groups(self) -> dict[str, list[nn.Parameter]]:
+        backbone_parameter_ids = {id(param) for param in self.backbone.parameters()}
+        groups = {"backbone": [], "heads": []}
+        for param in self.parameters():
+            if not param.requires_grad:
+                continue
+            target = "backbone" if id(param) in backbone_parameter_ids else "heads"
+            groups[target].append(param)
+        return groups
 
     def set_freeze(self, freeze):  # this is for use by downstream models
         if freeze == 'none':
@@ -486,8 +506,8 @@ class EncoderTrisplat(Encoder[EncoderTrisplatCfg]):
 
         to_be_frozen = {
             'none':     [],
-            'encoder':     [self.backbone.encoder],
-            'decoder':     [self.backbone.decoder, self.backbone.register_token, self.backbone.intrinsics_embed_layer],
+            'encoder': self.backbone.freeze_modules('encoder'),
+            'decoder': self.backbone.freeze_modules('decoder'),
             'encoder+decoder': [self.backbone],
             "heads": head_modules,
             'encoder+decoder+point_head': [self.backbone, *head_modules],
@@ -522,8 +542,14 @@ class EncoderTrisplat(Encoder[EncoderTrisplatCfg]):
 
         # Encode the context images.
         with torch.amp.autocast(device_type='cuda', enabled=True, dtype=torch.bfloat16):
-            hidden, pos, patch_start_idx, x_low, intrinsic_pred = self.backbone(context["image"], context["intrinsics"].clone())
-            del x_low
+            backbone_output = self.backbone(
+                context["image"],
+                context["intrinsics"].clone(),
+            )
+            hidden = backbone_output.tokens
+            pos = backbone_output.positions
+            patch_start_idx = backbone_output.patch_start_idx
+            intrinsic_pred = backbone_output.intrinsic_pred
 
             # hidden shape: (b*v, n, c), pos shape: (b*v, n, 2)
             if self.upscale_token_ratio > 1:

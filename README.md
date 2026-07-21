@@ -86,6 +86,34 @@ wget -O checkpoints/dl3dv_trisplat.ckpt \
   https://huggingface.co/lhmd/TriSplat/resolve/main/dl3dv_trisplat.ckpt
 ```
 
+For private or gated Hugging Face repositories, use the token-aware helper. The
+login command prompts securely when `HF_TOKEN` is not already set:
+
+```bash
+python scripts/env/download_hf_file.py login
+python scripts/env/download_hf_file.py status
+
+python scripts/env/download_hf_file.py download \
+  --repo-id lhmd/TriSplat \
+  --filename re10k_trisplat.ckpt \
+  --output checkpoints/re10k_trisplat.ckpt
+```
+
+Alternatively, provide a read token only to the current shell without putting it
+on the command line:
+
+```bash
+read -rsp "HF token: " HF_TOKEN && export HF_TOKEN && printf '\n'
+python scripts/env/download_hf_file.py download \
+  --repo-id yyfz233/Pi3 \
+  --filename model.safetensors \
+  --output pretrained_weights/pi3.safetensors
+unset HF_TOKEN
+```
+
+For a gated repository, first request or accept access on its Hugging Face page.
+Never commit an `hf_...` token to this repository.
+
 ## Datasets
 
 Packed `.torch` datasets default to:
