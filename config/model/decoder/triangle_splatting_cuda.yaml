@@ -1,0 +1,22 @@
+name: triangle_splatting_cuda
+
+background_color: [0.0, 0.0, 0.0]
+
+opacity_temp_initial: 1.0
+opacity_temp_final: 5.0
+opacity_temp_warmup_steps: 8000
+alpha_floor_min: 0.02
+alpha_floor_warmup_steps: 0
+
+sh_degree: 0
+prune_opacity_threshold: 0.
+
+# Match the native TriSplat rasterizer: test the triangle center against the
+# 0.2 near plane. Do not reject triangles solely because a vertex projects
+# outside the image; their source geometry is stabilized in TSAdapter.
+cull_out_of_bounds: false
+center_depth_culling: true
+near_plane: 0.2
+max_projected_edge_px: 0.
+texture_size: 1
+texture_color_sigma: 1.0

@@ -1,0 +1,115 @@
+# @package _global_
+
+defaults:
+  - /dataset@_group_.dl3dv: dl3dv_360
+  - override /model/encoder: da3_tsdpt
+  - override /model/decoder: triangle_splatting_cuda
+  - override /loss: [mse, lpips]
+
+wandb:
+  name: tsdpt_lgtm_stage_a_bookshelf
+  tags: [dl3dv, da3, tsdpt, lgtm, texture, appearance-only]
+
+model:
+  encoder:
+    name: da3_tsdpt
+    checkpoint: ${oc.env:DA3_CHECKPOINT,../Depth-Anything-3/checkpoints/DA3-GIANT-1.1}
+    triangle_scale_min: 1.0
+    # Keep the geometry mapping identical to the 8300-step source checkpoint.
+    # A 1.25 cap makes the same raw scale logits about 14x smaller than the
+    # normal TSDPT pipeline and causes sub-pixel faces to disappear.
+    triangle_scale_max: 18.0
+    triangle_scale_init_fraction: 0.25
+    sigma_scale_initial: 4.6
+    sigma_scale_final: 4.6
+    sigma_warmup_steps: 1
+    opacity_global_scale: 0.62
+    sh_degree: 0
+    freeze_backbone: true
+    sh_only: false
+    align_to_context_pose: true
+    use_geometry_valid_mask: false
+    texture_enabled: true
+    texture_size: 4
+    texture_project_as_base: true
+    texture_color_sigma: 1.0
+    texture_only: true
+  decoder:
+    sh_degree: 0
+    texture_size: 4
+    opacity_temp_initial: 1.0
+    opacity_temp_final: 5.0
+    opacity_temp_warmup_steps: 1
+    alpha_floor_min: 0.0
+    alpha_floor_warmup_steps: 0
+    cull_out_of_bounds: true
+    center_depth_culling: true
+    near_plane: 0.2
+    max_projected_edge_px: 0.0
+    color_brightness_gain: 1.0
+    color_saturation_gain: 1.0
+
+loss:
+  mse:
+    weight: 1.0
+    black_hole_weight: 0.25
+    black_hole_opacity_threshold: 0.05
+  lpips:
+    weight: 0.10
+    apply_after_step: 0
+
+dataset:
+  dl3dv:
+    roots: ["${oc.env:DL3DV_ROOT,./data/dl3dv}"]
+    test_roots: ["${oc.env:DL3DV_ROOT,./data/dl3dv}"]
+    overfit_to_scene: dl3dv_9c6612f2344468233191f853096d99b8aadaded4778d520141b15dfbaa6236a1
+    load_valid_mask: false
+    apply_valid_mask: false
+    input_image_shape: [224, 448]
+    original_image_shape: [540, 960]
+    pose_norm_method: max_pairwise_d
+    view_sampler:
+      name: evaluation
+      index_path: assets/dl3dv_bookshelf_eval.json
+      num_context_views: 6
+      num_target_views: 4
+
+optimizer:
+  lr: 2.0e-4
+  warm_up_steps: 100
+  backbone_lr_multiplier: 0.0
+  opacity_lr: null
+  tsdpt_lr: 0.0
+
+data_loader:
+  train:
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+  val:
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+
+trainer:
+  max_steps: 1000
+  val_check_interval: 250
+
+train:
+  print_log_every_n_steps: 10
+  eval_model_every_n_val: 0
+  train_ignore_large_loss_after_steps: 100000000
+  train_ignore_large_loss: 0.0
+  train_ignore_large_loss_mse: 0.0
+  train_ignore_large_loss_pose: 0.0
+  use_mono_normal_teacher: false
+  normal_bootstrap:
+    enabled: false
+  primitive_mask:
+    enabled: false
+
+checkpointing:
+  load: ${oc.env:TRISPLATPP_CHECKPOINT,./weights/trisplatpp_lgtm_step2700.ckpt}
+  every_n_train_steps: 100
+  save_top_k: -1
+  save_weights_only: true

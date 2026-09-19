@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - trisplat_dl3dv_triangle_refiner_unet_10m_224x448_test
+  - override /loss: [mse, lpips, pose, intrinsic]
+
+train:
+  use_mono_normal_teacher: false
+  normal_bootstrap:
+    enabled: false
+  mono_normal_weights_path: null

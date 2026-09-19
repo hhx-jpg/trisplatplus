@@ -1,0 +1,113 @@
+# @package _global_
+
+defaults:
+  - /dataset@_group_.dl3dv: dl3dv_360
+  - override /model/encoder: da3_tsdpt
+  - override /model/decoder: triangle_splatting_cuda
+  - override /loss: [mse, lpips]
+
+wandb:
+  name: tsdpt_da3_dl3dv_lpips10_resume7300_1k
+  tags: [dl3dv, da3, tsdpt, triangle, lpips-ablation]
+
+model:
+  encoder:
+    name: da3_tsdpt
+    checkpoint: ${oc.env:DA3_CHECKPOINT,../Depth-Anything-3/checkpoints/DA3-GIANT-1.1}
+    triangle_scale_min: 1.0
+    triangle_scale_max: 18.0
+    triangle_scale_max_start: null
+    triangle_scale_max_end: null
+    triangle_scale_max_schedule_steps: 0
+    triangle_scale_init_fraction: 0.25
+    max_triangle_edge_px: 0.0
+    sigma_scale_initial: 4.6
+    sigma_scale_final: 4.6
+    sigma_warmup_steps: 1
+    opacity_global_scale: 0.62
+    sh_degree: 0
+    freeze_backbone: true
+    smooth_kernel: 1
+    normal_smooth_kernel: 1
+    normal_smooth_iterations: 0
+    flip_to_camera: true
+    eps: 1.0e-6
+    align_to_context_pose: true
+    use_geometry_valid_mask: false
+  decoder:
+    opacity_temp_initial: 1.0
+    opacity_temp_final: 5.0
+    opacity_temp_warmup_steps: 8000
+    alpha_floor_min: 0.0
+    alpha_floor_warmup_steps: 0
+    cull_out_of_bounds: true
+    center_depth_culling: true
+    near_plane: 0.2
+    max_projected_edge_px: 0.0
+    color_brightness_gain: 1.05
+    color_saturation_gain: 1.10
+
+loss:
+  mse:
+    weight: 1.0
+    black_hole_weight: 0.25
+    black_hole_opacity_threshold: 0.05
+  lpips:
+    weight: 0.10
+    apply_after_step: 0
+
+dataset:
+  dl3dv:
+    load_valid_mask: false
+    apply_valid_mask: false
+    input_image_shape: [224, 448]
+    original_image_shape: [540, 960]
+    pose_norm_method: max_pairwise_d
+    overfit_to_scene: dl3dv_bbc16ed81de3f587010c73cf766aaf59199bda2e38b979af9c930206bccc7307
+    view_sampler:
+      name: evaluation
+      index_path: assets/dl3dv_bookshelf_eval.json
+      warm_up_steps: 75000
+      num_context_views: 6
+      initial_min_distance_between_context_views: 15
+      initial_max_distance_between_context_views: 30
+      min_distance_between_context_views: 20
+      max_distance_between_context_views: 50
+      context_gap_warm_up_steps: 75000
+
+optimizer:
+  lr: 2.0e-4
+  warm_up_steps: 1000
+  backbone_lr_multiplier: 0.0
+  opacity_lr: 1.0e-4
+  tsdpt_lr: 1.0e-6
+
+data_loader:
+  train:
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+  val:
+    num_workers: 0
+    persistent_workers: false
+
+trainer:
+  max_steps: 8300
+  val_check_interval: 500
+
+train:
+  train_ignore_large_loss_after_steps: 100000000
+  train_ignore_large_loss: 0.0
+  train_ignore_large_loss_mse: 0.0
+  train_ignore_large_loss_pose: 0.0
+  use_mono_normal_teacher: false
+  normal_bootstrap:
+    enabled: false
+  primitive_mask:
+    enabled: false
+
+checkpointing:
+  load: /root/data/haoxuan/TriSplat/outputs/exp_tsdpt_da3_dl3dv_5k_noschedule_resume5000_calibrated/2026-08-27_07-21-46/checkpoints/render_step_007300.ckpt
+  every_n_train_steps: 100
+  save_top_k: -1
+  save_weights_only: true

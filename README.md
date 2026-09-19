@@ -1,0 +1,284 @@
+<h1 align="center">TriSplat++: DA3 Geometry with LGTM Texture</h1>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2605.26115"><img src="https://img.shields.io/badge/Paper-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white" alt="Paper"></a>
+  <a href="https://lhmd.top/trisplat"><img src="https://img.shields.io/badge/Project%20Page-000000?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project Page"></a>
+  <a href="https://github.com/ziplab/TriSplat"><img src="https://img.shields.io/badge/Code-181717?style=for-the-badge&logo=github&logoColor=white" alt="Code"></a>
+  <a href="https://huggingface.co/lhmd/TriSplat"><img src="https://img.shields.io/badge/Models-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Models"></a>
+</p>
+
+<p align="center">
+  <a href="https://lhmd.top/">Weijie Wang</a><sup>1,*</sup> &nbsp;
+  <a href="https://github.com/puLangMu">Zimu Li</a><sup>1,*</sup> &nbsp;
+  <a href="https://chuan-10.github.io/">Jinchuan Shi</a><sup>1</sup> &nbsp;
+  <a href="https://steve-zeyu-zhang.github.io/">Zeyu Zhang</a><sup>1</sup> &nbsp;
+  <a href="https://botaoye.github.io/">Botao Ye</a><sup>2,3</sup> <br />
+  <a href="https://people.inf.ethz.ch/~pomarc/">Marc Pollefeys</a><sup>2,4</sup> &nbsp;
+  <a href="https://donydchen.github.io/">Donny Y. Chen</a><sup>5</sup> &nbsp;
+  <a href="https://bohanzhuang.github.io/">Bohan Zhuang</a><sup>1</sup> &nbsp;
+</p>
+
+<p align="center">
+  <sup>1</sup>Zhejiang University &nbsp; &nbsp;
+  <sup>2</sup>ETH Zurich &nbsp; &nbsp;
+  <sup>3</sup>ETH AI Center &nbsp; &nbsp;
+  <sup>4</sup>Microsoft &nbsp; &nbsp;
+  <sup>5</sup>Monash University
+</p>
+
+<p align="center">
+  <img src="https://lhmd.top/trisplat/assets/images/teaser.jpg" alt="TriSplat teaser" width="100%">
+</p>
+
+TriSplat++ is the focused DA3/LGTM variant of TriSplat. A frozen
+Depth-Anything-3 (DA3) backbone predicts calibrated point-map geometry and
+triangle attributes; an LGTM-style texture head projects native context pixels
+onto each triangle and learns a compact residual tile. The existing CUDA
+triangle rasterizer composites those tiles into RGB while preserving the DA3
+geometry, depth, normal, and mesh-export paths.
+
+## What is in this repository
+
+The independent checkout keeps the training and rendering path together:
+
+```text
+src/model/encoder/encoder_da3_tsdpt.py   DA3/TSDPT bridge and camera alignment
+src/model/head/triangle_texture_head.py   LGTM projected texture + residual head
+src/model/decoder/cuda_triangle_splatting.py
+                                         textured CUDA triangle renderer
+src/model/decoder/decoder_triangle_splatting_cuda.py
+                                         decoder wrapper and alpha schedule
+src/model/types.py                        triangle/texture tensor contracts
+config/model/encoder/da3_tsdpt.yaml       DA3 encoder defaults
+config/experiment/trisplat_dl3dv_tsdpt_lgtm10k_train.yaml
+                                         reference 10K LGTM training setup
+```
+
+The required DA3 Python bridge is vendored under
+`third_party/depth-anything-3/`; no DA3 checkout is needed for the source
+code. Set `DA3_ROOT` when you want to use a separately managed
+Depth-Anything-3 checkout (or its `src` directory), and set `DA3_CHECKPOINT`
+to the `DA3-GIANT-1.1` weights. Model weights are deliberately not vendored.
+
+The validated appearance checkpoint is recorded in
+[weights/README.md](weights/README.md). By default the reference experiment
+loads `weights/trisplatpp_lgtm_step2700.ckpt`; set
+`TRISPLATPP_CHECKPOINT` to the actual artifact path when the checkpoint is kept
+outside the repository.
+
+## Quick start
+
+```bash
+conda create -y -n trisplatpp python=3.10
+conda activate trisplatpp
+pip install torch torchvision torchaudio
+pip install -r requirements.txt --no-build-isolation
+bash scripts/env/rebuild_extensions.sh
+
+export DA3_ROOT=/path/to/Depth-Anything-3
+export DA3_CHECKPOINT="$DA3_ROOT/checkpoints/DA3-GIANT-1.1"
+export DL3DV_ROOT=/path/to/dl3dv_torch_960/10K
+export TRISPLATPP_CHECKPOINT=/path/to/render_step_002700.ckpt
+```
+
+Run the reference configuration (the default launcher uses the normal
+Lightning/Hydra entry point):
+
+```bash
+python -m src.main \
+  +experiment=trisplat_dl3dv_tsdpt_lgtm10k_train \
+  trainer.max_steps=10000 \
+  wandb.mode=disabled
+```
+
+For a source-only smoke check that does not initialize CUDA or DA3 weights:
+
+```bash
+python -m py_compile \
+  src/model/encoder/encoder_da3_tsdpt.py \
+  src/model/head/triangle_texture_head.py \
+  src/model/decoder/cuda_triangle_splatting.py \
+  src/model/decoder/decoder_triangle_splatting_cuda.py
+git diff --check
+```
+
+## Method
+
+<p align="center">
+  <img src="https://lhmd.top/trisplat/assets/figures/pipeline2.png" alt="TriSplat pipeline" width="100%">
+</p>
+
+Given sparse input views, TriSplat predicts dense local point maps, triangle attributes, camera poses, and optional intrinsics. Point-map geometry anchors triangle orientation through geometry normals, a learned normal refiner, and a monocular-normal bootstrap. A differentiable triangle rasterizer renders RGB, depth, and normals, while mesh export only needs opacity filtering, winding correction, and duplicate-vertex merging.
+
+## Installation
+
+Create the environment:
+
+```bash
+conda create -y -n trisplat python=3.10
+conda activate trisplat
+pip install --upgrade pip
+```
+
+Install PyTorch and Python dependencies:
+
+```bash
+pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+  --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt --no-build-isolation
+```
+
+Build CUDA extensions:
+
+```bash
+bash scripts/env/rebuild_extensions.sh
+```
+
+Download initialization weights used by the model:
+
+```bash
+mkdir -p pretrained_weights
+wget -O pretrained_weights/pi3.safetensors \
+  https://huggingface.co/yyfz233/Pi3/resolve/main/model.safetensors
+wget -O pretrained_weights/omnidata_dpt_normal_v2.ckpt \
+  'https://zenodo.org/records/10447888/files/omnidata_dpt_normal_v2.ckpt?download=1'
+```
+
+## Models
+
+Download released TriSplat checkpoints from [lhmd/TriSplat](https://huggingface.co/lhmd/TriSplat):
+
+```bash
+mkdir -p checkpoints
+wget -O checkpoints/re10k_trisplat.ckpt \
+  https://huggingface.co/lhmd/TriSplat/resolve/main/re10k_trisplat.ckpt
+wget -O checkpoints/dl3dv_trisplat.ckpt \
+  https://huggingface.co/lhmd/TriSplat/resolve/main/dl3dv_trisplat.ckpt
+```
+
+## Datasets
+
+Packed `.torch` datasets default to:
+
+```text
+data/re10k
+data/dl3dv
+```
+
+You can also set:
+
+```bash
+export RE10K_ROOT="$PWD/data/re10k"
+export DL3DV_ROOT="$PWD/data/dl3dv"
+```
+
+See [data/README.md](data/README.md) for dataset layout and conversion notes.
+
+## Training
+
+Train on RealEstate10K:
+
+```bash
+bash scripts/train/train_re10k.sh --gpus 0,1,2,3,4,5,6,7 --wandb-mode offline
+```
+
+Train on DL3DV:
+
+```bash
+bash scripts/train/train_dl3dv.sh --gpus 0,1,2,3,4,5,6,7 --wandb-mode offline
+```
+
+Extra arguments after `--` are passed to Hydra. Use `--ckpt` to resume or initialize from a checkpoint.
+
+## Evaluation
+
+Evaluate and render RealEstate10K meshes:
+
+```bash
+bash scripts/eval/eval_re10k_mesh.sh \
+  --ckpt checkpoints/re10k_trisplat.ckpt \
+  --data-root "$RE10K_ROOT"
+```
+
+Evaluate and render DL3DV meshes:
+
+```bash
+bash scripts/eval/eval_dl3dv_mesh.sh \
+  --ckpt checkpoints/dl3dv_trisplat.ckpt \
+  --data-root "$DL3DV_ROOT"
+```
+
+## Custom Image Inference
+
+For raw custom images, use the plain torch inference script. It does not use the
+Lightning `Trainer` or dataset `DataModule`; it loads images from a folder, runs
+the pose-free encoder directly, and exports a direct triangle mesh plus predicted
+camera poses:
+
+```bash
+python -m src.scripts.infer_custom_mesh \
+  --image-dir /path/to/images \
+  --ckpt checkpoints/re10k_trisplat.ckpt \
+  --out-dir outputs/custom_mesh/demo \
+  --num-views 2 \
+  --force
+```
+
+By default the script uses the lightweight RE10K 2-view experiment and selects
+views uniformly from the folder. Use `--view-indices 0,5` to choose frames
+explicitly. If camera intrinsics are unavailable, the script creates a normalized
+pinhole camera from a 60 degree horizontal FOV; override this with `--fov-deg` or
+`--intrinsics-json`.
+
+The main outputs are:
+
+```text
+outputs/custom_mesh/demo/mesh/DIRECT_triangle_mesh.ply
+outputs/custom_mesh/demo/mesh/DIRECT_triangle_mesh_post.ply
+outputs/custom_mesh/demo/predicted_c2w.json
+outputs/custom_mesh/demo/inference_summary.json
+```
+
+Pass extra Hydra options with repeated `--override` flags, for example
+`--override mesh.tsdf_gs2d.direct_post_process=false` to save only the raw direct
+mesh.
+
+## Simulation
+
+TriSplat exports ordinary triangle meshes, so the output can be opened directly by common graphics and simulation tools. The evaluation scripts above write per-scene meshes under:
+
+```text
+outputs/<eval_root>/<run_name>/<scene>/mesh/DIRECT_triangle_mesh.ply
+outputs/<eval_root>/<run_name>/<scene>/mesh/DIRECT_triangle_mesh.off
+outputs/<eval_root>/<run_name>/<scene>/mesh/DIRECT_triangle_mesh_post.ply
+outputs/<eval_root>/<run_name>/<scene>/mesh/DIRECT_triangle_mesh_post.off
+```
+
+The `_post` mesh is the default rendering and simulation output. Direct triangle
+meshes use quantile geometry cleanup to remove non-finite, degenerate, very large,
+or distant triangle outliers before compacting referenced vertices. TSDF meshes
+still use connected-component cleanup. For example, after running
+`scripts/eval/eval_re10k_mesh.sh`, use:
+
+```bash
+ls outputs/re10k_mesh_eval/re10k_mesh_eval/*/mesh/DIRECT_triangle_mesh_post.ply
+```
+
+The exported `_post.ply` mesh is vertex-colored and can be imported into [Blender](https://www.blender.org/), [Open3D](https://www.open3d.org/), [Isaac Sim](https://developer.nvidia.com/isaac/sim), [Unity](https://unity.com/), or [PyBullet](https://pybullet.org/) as a static triangle mesh. For simulation, use the `.ply` mesh for visual geometry and generate a collision mesh in your simulator if needed; for example, simplify or convex-decompose it before rigid-body simulation when the raw mesh is too dense.
+
+## Citation
+
+If you find this repository useful, please cite:
+
+```bibtex
+@article{wang2026trisplat,
+  title={TriSplat: Simulation-Ready Feed-Forward 3D Scene Reconstruction},
+  author={Wang, Weijie and Li, Zimu and Shi, Jinchuan and Zhang, Zeyu and Ye, Botao and Pollefeys, Marc and Chen, Donny Y. and Zhuang, Bohan},
+  journal={arXiv preprint arXiv:2605.26115},
+  year={2026}
+}
+```
+
+## Acknowledgements
+
+This codebase builds on open-source work including [YoNoSplat](https://github.com/justimyhxu/YoNoSplat), [MVSplat](https://github.com/donydchen/mvsplat), [pixelSplat](https://github.com/dcharatan/pixelsplat), [CroCo](https://github.com/naver/croco), [DINOv2](https://github.com/facebookresearch/dinov2), [Omnidata](https://github.com/EPFL-VILAB/omnidata), [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting), and [Triangle Splatting](https://github.com/trianglesplatting/triangle-splatting).

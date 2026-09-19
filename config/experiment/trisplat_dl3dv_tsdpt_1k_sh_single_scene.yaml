@@ -1,0 +1,113 @@
+# @package _global_
+
+defaults:
+  - /dataset@_group_.dl3dv: dl3dv_360
+  - override /model/encoder: da3_tsdpt
+  - override /model/decoder: triangle_splatting_cuda
+  - override /loss: [mse, lpips]
+
+wandb:
+  name: tsdpt_da3_dl3dv_sh_single_scene_resume5000_1k
+  tags: [dl3dv, da3, tsdpt, sh-only, single-scene]
+
+model:
+  encoder:
+    name: da3_tsdpt
+    checkpoint: ${oc.env:DA3_CHECKPOINT,../Depth-Anything-3/checkpoints/DA3-GIANT-1.1}
+    triangle_scale_min: 1.0
+    triangle_scale_max: 1.25
+    triangle_scale_max_start: null
+    triangle_scale_max_end: null
+    triangle_scale_max_schedule_steps: 0
+    triangle_scale_init_fraction: 0.25
+    max_triangle_edge_px: 0.0
+    sigma_scale_initial: 4.6
+    sigma_scale_final: 4.6
+    sigma_warmup_steps: 1
+    opacity_global_scale: 0.62
+    sh_degree: 2
+    sh_degree2_weight: 0.25
+    freeze_backbone: true
+    sh_only: true
+    smooth_kernel: 1
+    normal_smooth_kernel: 1
+    normal_smooth_iterations: 0
+    flip_to_camera: true
+    eps: 1.0e-6
+    align_to_context_pose: true
+    use_geometry_valid_mask: false
+  decoder:
+    sh_degree: 2
+    opacity_temp_initial: 1.0
+    opacity_temp_final: 5.0
+    opacity_temp_warmup_steps: 8000
+    alpha_floor_min: 0.0
+    alpha_floor_warmup_steps: 0
+    cull_out_of_bounds: true
+    center_depth_culling: true
+    near_plane: 0.2
+    max_projected_edge_px: 0.0
+    color_brightness_gain: 1.05
+    color_saturation_gain: 1.10
+
+loss:
+  mse:
+    black_hole_weight: 0.25
+    black_hole_opacity_threshold: 0.05
+
+dataset:
+  dl3dv:
+    roots: [/root/data/lhmd/dl3dv_torch_960/10K]
+    test_roots: [/root/data/lhmd/dl3dv_torch_960/10K]
+    overfit_to_scene: dl3dv_e2d2d41584ebc480eb6ae2f9dba47d4ac4bd21d4c23af1f893add12ee8bdb5db
+    load_valid_mask: false
+    apply_valid_mask: false
+    input_image_shape: [224, 448]
+    original_image_shape: [540, 960]
+    pose_norm_method: max_pairwise_d
+    view_sampler:
+      name: evaluation
+      index_path: assets/dl3dv_step7000_scene_eval.json
+      num_context_views: 6
+      num_target_views: 4
+
+optimizer:
+  lr: 2.0e-4
+  warm_up_steps: 100
+  backbone_lr_multiplier: 0.0
+  tsdpt_lr: 2.0e-4
+
+data_loader:
+  train:
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+  val:
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+
+trainer:
+  # Lightning's max_steps is an absolute schedule step. The model-only
+  # checkpoint is at step 5000, so 1000 additional updates end at 6000.
+  max_steps: 6000
+  val_check_interval: 500
+
+train:
+  print_log_every_n_steps: 10
+  eval_model_every_n_val: 0
+  train_ignore_large_loss_after_steps: 100000000
+  train_ignore_large_loss: 0.0
+  train_ignore_large_loss_mse: 0.0
+  train_ignore_large_loss_pose: 0.0
+  use_mono_normal_teacher: false
+  normal_bootstrap:
+    enabled: false
+  primitive_mask:
+    enabled: false
+
+checkpointing:
+  load: /root/data/haoxuan/TriSplat/outputs/exp_tsdpt_da3_dl3dv_5k_noschedule_resume3900_color/2026-08-27_03-27-22/checkpoints/render_step_005000.ckpt
+  every_n_train_steps: 100
+  save_top_k: -1
+  save_weights_only: true

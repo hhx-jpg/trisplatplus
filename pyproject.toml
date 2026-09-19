@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trisplat-plus-plus"
+version = "0.1.0"
+description = "DA3-backed triangle splatting with an LGTM-style texture head"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["src*"]

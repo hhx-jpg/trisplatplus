@@ -1,0 +1,51 @@
+# @package _global_
+
+defaults:
+  - /dataset@_group_.dl3dv: dl3dv_360
+  - override /model/encoder: da3_tsdpt
+  - override /model/decoder: triangle_splatting_cuda
+  - override /loss: [mse, lpips]
+
+wandb:
+  name: dl3dv_triangle_refiner_unet_10m
+  tags: [dl3dv, 224x448, triangle, refiner_unet_10m]
+
+model:
+  encoder:
+    name: da3_tsdpt
+    checkpoint: ${oc.env:DA3_CHECKPOINT,../Depth-Anything-3/checkpoints/DA3-GIANT-1.1}
+
+dataset:
+  dl3dv:
+    input_image_shape: [224, 448]
+    original_image_shape: [540, 960]
+    pose_norm_method: max_pairwise_d
+    view_sampler:
+      warm_up_steps: 75000
+      num_context_views: 12
+      initial_min_distance_between_context_views: 15
+      initial_max_distance_between_context_views: 30
+      min_distance_between_context_views: 20
+      max_distance_between_context_views: 50
+
+optimizer:
+  lr: 2e-4
+  warm_up_steps: 1000
+  backbone_lr_multiplier: 0.01
+
+data_loader:
+  train:
+    batch_size: 1
+
+trainer:
+  max_steps: 150001
+  val_check_interval: 500
+
+train:
+  train_ignore_large_loss_after_steps: 20000
+  use_mono_normal_teacher: false
+  normal_bootstrap:
+    enabled: false
+
+checkpointing:
+  every_n_train_steps: 5000

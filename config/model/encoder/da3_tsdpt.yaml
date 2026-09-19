@@ -1,0 +1,34 @@
+name: da3_tsdpt
+checkpoint: ${oc.env:DA3_CHECKPOINT,../Depth-Anything-3/checkpoints/DA3-GIANT-1.1}
+triangle_scale_min: 1.0
+triangle_scale_max: 1.25
+triangle_scale_max_start: null
+triangle_scale_max_end: null
+triangle_scale_max_schedule_steps: 0
+triangle_scale_init_fraction: 0.25
+max_triangle_edge_px: 0.0
+sigma_scale_initial: 4.6
+sigma_scale_final: 4.6
+sigma_warmup_steps: 1
+opacity_global_scale: 0.62
+sh_degree: 0
+sh_degree2_weight: null
+freeze_backbone: true
+sh_only: false
+smooth_kernel: 1
+normal_smooth_kernel: 1
+normal_smooth_iterations: 0
+flip_to_camera: true
+eps: 1.0e-6
+align_to_context_pose: true
+# The training/evaluation cameras are calibrated c2w poses.  Use their full
+# rotations when lifting DA3 depth so the world point map and renderer share
+# one per-view camera frame after the official Sim(3) scale alignment.
+align_to_context_rotation: true
+use_context_camera_tokens: true
+use_geometry_valid_mask: false
+texture_enabled: false
+texture_size: 4
+texture_project_as_base: true
+texture_color_sigma: 1.0
+texture_only: false
