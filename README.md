@@ -122,11 +122,16 @@ scripts/render_6view_triptych.py          DL3DV six-view GT/normal/render export
 
 The required DA3 Python bridge is vendored under
 `third_party/depth-anything-3/`; no DA3 checkout is needed for the source
-code. Set `DA3_ROOT` when you want to use a separately managed
-Depth-Anything-3 checkout (or its `src` directory), and set `DA3_CHECKPOINT`
-to the `DA3-GIANT-1.1` weights. Model weights are deliberately not vendored.
+code. The TriSplat++ checkpoint in `weights/` is output-head-only: it does not
+contain the DA3 backbone or the DA3 camera/depth feature branches. Every
+forward or training run must therefore provide the complete
+`DA3-GIANT-1.1` checkpoint separately. Set `DA3_ROOT` when you want to use a
+separately managed Depth-Anything-3 checkout (or its `src` directory), and set
+`DA3_CHECKPOINT` to that full model directory. See
+[weights/README.md](weights/README.md) for the exact checkpoint contents and
+loading contract.
 
-The validated appearance checkpoint is recorded in
+The validated output-head checkpoint is recorded in
 [weights/README.md](weights/README.md). By default the reference experiment
 loads `weights/trisplatpp_lgtm_step2700.ckpt`; set
 `TRISPLATPP_CHECKPOINT` to the actual artifact path when the checkpoint is kept
