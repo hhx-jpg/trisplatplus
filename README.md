@@ -30,12 +30,77 @@
   <img src="https://lhmd.top/trisplat/assets/images/teaser.jpg" alt="TriSplat teaser" width="100%">
 </p>
 
-TriSplat++ is the focused DA3/LGTM variant of TriSplat. A frozen
-Depth-Anything-3 (DA3) backbone predicts calibrated point-map geometry and
-triangle attributes; an LGTM-style texture head projects native context pixels
-onto each triangle and learns a compact residual tile. The existing CUDA
-triangle rasterizer composites those tiles into RGB while preserving the DA3
-geometry, depth, normal, and mesh-export paths.
+TriSplat++ is the focused DA3/LGTM variant of TriSplat. It replaces the
+original geometry trunk with the Depth-Anything-3 (DA3) GIANT multi-view
+backbone and its DPT-style feature/depth fusion head. The resulting TSDPT
+projection predicts a calibrated point map together with the triangle
+attributes required by TriSplat (scale, orientation, opacity, sigma, and
+appearance coefficients). A dedicated LGTM-style texture-remapping head then
+projects native context pixels into each triangle's local 3D frame and learns a
+compact residual texture tile. The existing CUDA triangle rasterizer samples
+those tiles during rasterization, so high-frequency appearance is improved
+without changing the DA3 geometry, depth, normal, or mesh-export paths.
+
+## TriSplat++ architecture and improvements
+
+The model separates geometry from appearance while keeping both branches in
+the same differentiable triangle-splatting pipeline:
+
+```text
+context images (224x448) + calibrated cameras
+        |
+        v
+DA3-GIANT backbone + camera conditioning (frozen)
+        |
+        v
+DPT-style depth/feature fusion + TSDPT GS projection head
+        |  point map, depth, camera frame, scale/rotation/opacity/sigma
+        v
+TSAdapter + calibrated Sim(3)/pose alignment
+        |
+        v
+TriSplat triangles ------------------------------+
+                                                  |
+native context images (540x960) + native K       |
+        |                                         |
+        v                                         |
+project each triangle into its source view       |
+        |                                         |
+        v                                         |
+4x4 projected RGB tile + image patch features   |
+        |                                         |
+        v                                         |
+LGTM texture-remapping head                     |
+  projected-tile processor + patchify/fusion     |
+  zero-initialized residual, base + delta tile   |
+        |                                         |
+        +------------> CUDA triangle rasterizer -+
+                           barycentric tile sampling -> RGB/depth/normal
+```
+
+The main changes over the original TriSplat path are:
+
+1. **DA3/DPT geometry trunk.** DA3 supplies multi-view features, camera
+   conditioning, depth, and a DPT-like fused feature map. The TSDPT head keeps
+   the checkpoint-compatible GS parameterization and adds independent opacity
+   and sigma outputs. The frozen DA3 prediction is lifted with the calibrated
+   DL3DV intrinsics and aligned to the supplied context poses before triangle
+   construction.
+2. **Dedicated texture remapping.** Instead of relying only on per-triangle
+   SH/DC color, each triangle receives a source-image tile obtained by
+   projective remapping through its three world-space vertices. A `4x4` tile is
+   processed together with native-image patch features; a zero-initialized
+   residual makes the projected color a stable base while the learned head
+   restores local details. This is a geometry-aware texture operation, not a
+   screen-space sharpening/post-processing step.
+3. **Appearance-only optimization.** `texture_only=true` freezes DA3, TSDPT,
+   the triangle geometry, and the calibrated opacity/sigma path. Only the
+   texture head and its projection/fusion blocks are optimized, allowing
+   texture quality to improve without moving the reconstructed surface.
+4. **Explicit resolution contract.** The DA3 geometry branch consumes
+   `224x448` crops, while the texture branch retains native `540x960` pixels
+   and intrinsics. The six-view renderer checks this contract before model
+   construction and writes a skip record for incompatible scenes.
 
 ## What is in this repository
 
@@ -52,6 +117,7 @@ src/model/types.py                        triangle/texture tensor contracts
 config/model/encoder/da3_tsdpt.yaml       DA3 encoder defaults
 config/experiment/trisplat_dl3dv_tsdpt_lgtm10k_train.yaml
                                          reference 10K LGTM training setup
+scripts/render_6view_triptych.py          DL3DV six-view GT/normal/render export
 ```
 
 The required DA3 Python bridge is vendored under
@@ -81,6 +147,26 @@ export DL3DV_ROOT=/path/to/dl3dv_torch_960/10K
 export TRISPLATPP_CHECKPOINT=/path/to/render_step_002700.ckpt
 ```
 
+For the provided DL3DV forward renderer, use the trained TriSplat++ checkpoint
+and the DA3-GIANT weights together. The geometry input must stay at `224x448`
+and the texture input at the native `540x960`; scenes with another native
+resolution are skipped before the model is built:
+
+```bash
+/opt/conda/envs/trisplat/bin/python \
+  scripts/render_6view_triptych.py \
+  --data-root /path/to/dl3dv_torch_960/10K \
+  --chunk /path/to/dl3dv_torch_960/10K/train/000000.torch \
+  --scene-index 0 \
+  --checkpoint weights/trisplatpp_lgtm_step2700.ckpt \
+  --da3-checkpoint "$DA3_CHECKPOINT" \
+  --out outputs/render_6view_triptych_scene0 \
+  --device cuda:0
+```
+
+The renderer writes one six-row, three-column `GT / NORMAL / RENDER` sheet,
+per-view PNGs, and `metadata.json` under the selected scene directory.
+
 Run the reference configuration (the default launcher uses the normal
 Lightning/Hydra entry point):
 
@@ -108,7 +194,22 @@ git diff --check
   <img src="https://lhmd.top/trisplat/assets/figures/pipeline2.png" alt="TriSplat pipeline" width="100%">
 </p>
 
-Given sparse input views, TriSplat predicts dense local point maps, triangle attributes, camera poses, and optional intrinsics. Point-map geometry anchors triangle orientation through geometry normals, a learned normal refiner, and a monocular-normal bootstrap. A differentiable triangle rasterizer renders RGB, depth, and normals, while mesh export only needs opacity filtering, winding correction, and duplicate-vertex merging.
+Given sparse calibrated input views, TriSplat++ first runs DA3-GIANT at
+`224x448`. DA3's camera tokens and DPT-style depth/feature fusion provide a
+scene-consistent point map; TSDPT converts the map into triangle attributes,
+and the calibrated context cameras replace the predicted intrinsics when
+lifting points for DL3DV. `TSAdapter.from_point_map` then constructs local
+triangle frames and the CUDA decoder renders RGB, depth, and normals.
+
+The appearance branch keeps the original `540x960` context images. For every
+geometry pixel, `project_triangle_texture` maps the corresponding world-space
+triangle back into its source camera and samples a border-clamped `4x4` RGB
+tile. `TriangleTextureHead` combines that tile with patchified native-image
+features and emits a zero-initialized residual. The decoder samples the final
+tile in barycentric triangle coordinates, preserving sharp local appearance
+without modifying vertices, normals, scale, opacity, or sigma. Mesh export and
+the existing geometry diagnostics therefore remain compatible with the base
+TriSplat pipeline.
 
 ## Installation
 
